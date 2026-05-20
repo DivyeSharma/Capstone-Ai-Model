@@ -9,121 +9,229 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-# Load environment variables
+# ==============================
+# Load Environment Variables
+# ==============================
 load_dotenv()
 
-# Configure Gemini
-api_key = os.getenv("GEMINI_API_KEY")
-if api_key:
-    client = genai.Client(api_key=api_key)
-else:
-    client = None
-    print("WARNING: GEMINI_API_KEY not found in .env file.")
-
-GEMINI_PROMPT = """
-You are an expert Agricultural Pathologist and Agronomist. 
-Analyze this plant leaf image and identify any diseases, deficiencies, or pests.
-Respond ONLY with a valid JSON object using this exact format:
-{
-    "status": "Healthy" | "Mild Infection" | "Moderate Infection" | "Severe Infection" | "Critical / Dead" | "Not a Leaf",
-    "disease_name": "Name of the disease (e.g., Early Blight, Powdery Mildew, No Disease Detected)",
-    "confidence": <number between 0-100>,
-    "disease_percentage": <number between 0-100>,
-    "recommendation_en": "Detailed treatment recommendation and action plan in English.",
-    "recommendation_hi": "Detailed treatment recommendation and action plan in Hindi."
-}
-If the image is completely unreadable or not a plant, return "status": "Not a Leaf" and set percentage to 0.
-"""
-
+# ==============================
+# Flask App Setup
+# ==============================
 app = Flask(__name__)
 CORS(app)
 
-# Load the Yield Prediction Model
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'yield_model.pkl')
+# ==============================
+# Configure Gemini API
+# ==============================
+api_key = os.getenv("GEMINI_API_KEY")
+
+if api_key:
+    client = genai.Client(api_key=api_key)
+    print("Gemini API Connected Successfully")
+else:
+    client = None
+    print("WARNING: GEMINI_API_KEY not found")
+
+# ==============================
+# Gemini Prompt
+# ==============================
+GEMINI_PROMPT = """
+You are an expert Agricultural Pathologist and Agronomist.
+
+Analyze this plant leaf image and identify:
+- diseases
+- nutrient deficiencies
+- pests
+
+Respond ONLY in valid JSON format:
+
+{
+    "status": "Healthy" | "Mild Infection" | "Moderate Infection" | "Severe Infection" | "Critical / Dead" | "Not a Leaf",
+    "disease_name": "Disease Name",
+    "confidence": 0,
+    "disease_percentage": 0,
+    "recommendation_en": "English recommendation",
+    "recommendation_hi": "Hindi recommendation"
+}
+
+If image is not a leaf return:
+{
+    "status": "Not a Leaf"
+}
+"""
+
+# ==============================
+# Load Yield Prediction Model
+# ==============================
+MODEL_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "yield_model.pkl"
+)
+
 try:
-    with open(MODEL_PATH, 'rb') as f:
-        yield_model = pickle.load(f)
-    print("Yield Model loaded successfully.")
+    with open(MODEL_PATH, "rb") as file:
+        yield_model = pickle.load(file)
+
+    print("Yield Model Loaded Successfully")
+
 except Exception as e:
-    print(f"Warning: Could not load yield model. Run train_yield.py first. Error: {e}")
+    print(f"Model Loading Error: {e}")
     yield_model = None
 
-@app.route('/predict_yield', methods=['POST'])
+# ==============================
+# Home Route
+# ==============================
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({
+        "success": True,
+        "message": "Smart Crop Advisory AI Backend Running"
+    })
+
+# ==============================
+# Health Check Route
+# ==============================
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({
+        "status": "healthy"
+    })
+
+# ==============================
+# Yield Prediction Route
+# ==============================
+@app.route("/predict_yield", methods=["POST"])
 def predict_yield():
-    if not yield_model:
-        return jsonify({'error': 'Model not trained yet on server.'}), 500
-        
-    try:
-        data = request.json
-        crop = data.get('crop')
-        temperature = float(data.get('temperature'))
-        rainfall = float(data.get('rainfall'))
-        
-        if not crop:
-            return jsonify({'error': 'Crop is required'}), 400
-            
-        # Create a DataFrame matching the training data format
-        input_data = pd.DataFrame([{
-            'Crop': crop,
-            'Temperature': temperature,
-            'Rainfall': rainfall
-        }])
-        
-        prediction = yield_model.predict(input_data)[0]
-        
+
+    if yield_model is None:
         return jsonify({
-            'success': True,
-            'crop': crop,
-            'predicted_yield_q_per_ha': round(prediction, 2),
-            'predicted_yield_kg_per_acre': round(prediction * 100 * 0.404686, 2) # Conversion
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 400
+            "success": False,
+            "error": "Yield model not loaded"
+        }), 500
 
-
-@app.route('/detect_disease', methods=['POST'])
-def detect_disease():
-    if 'image' not in request.files:
-        return jsonify({'error': 'No image uploaded'}), 400
-        
     try:
-        file = request.files['image']
+        data = request.get_json()
+
+        crop = data.get("crop")
+        temperature = float(data.get("temperature"))
+        rainfall = float(data.get("rainfall"))
+
+        if not crop:
+            return jsonify({
+                "success": False,
+                "error": "Crop is required"
+            }), 400
+
+        # Create dataframe
+        input_df = pd.DataFrame([{
+            "Crop": crop,
+            "Temperature": temperature,
+            "Rainfall": rainfall
+        }])
+
+        # Prediction
+        prediction = yield_model.predict(input_df)[0]
+
+        return jsonify({
+            "success": True,
+            "crop": crop,
+            "predicted_yield_q_per_ha": round(float(prediction), 2),
+            "predicted_yield_kg_per_acre": round(
+                float(prediction) * 100 * 0.404686,
+                2
+            )
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 400
+
+# ==============================
+# Disease Detection Route
+# ==============================
+@app.route("/detect_disease", methods=["POST"])
+def detect_disease():
+
+    try:
+
+        # Check image
+        if "image" not in request.files:
+            return jsonify({
+                "success": False,
+                "error": "No image uploaded"
+            }), 400
+
+        file = request.files["image"]
+
+        if file.filename == "":
+            return jsonify({
+                "success": False,
+                "error": "No selected image"
+            }), 400
+
+        # Gemini API check
+        if client is None:
+            return jsonify({
+                "success": False,
+                "error": "Gemini API Key not configured"
+            }), 500
+
+        # Read image bytes
         img_bytes = file.read()
-        
-        if not client:
-            return jsonify({'error': 'GEMINI_API_KEY is not configured in the server .env file.'}), 500
-            
-        # Format the image for Gemini using new SDK
+
+        # Convert image for Gemini
         image_part = types.Part.from_bytes(
             data=img_bytes,
             mime_type=file.mimetype or "image/jpeg"
         )
-        
-        # Call Gemini 2.5 Flash Vision Model
+
+        # Generate AI response
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=[GEMINI_PROMPT, image_part]
+            model="gemini-2.5-flash",
+            contents=[
+                GEMINI_PROMPT,
+                image_part
+            ]
         )
-        
-        # Parse the JSON response
-        text_res = response.text
-        
-        # Clean markdown code blocks if Gemini added them
+
+        text_res = response.text.strip()
+
+        # Remove markdown if present
         if "```json" in text_res:
             text_res = text_res.split("```json")[1].split("```")[0].strip()
+
         elif "```" in text_res:
             text_res = text_res.split("```")[1].strip()
-            
-        result = json.loads(text_res)
-        result['success'] = True
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        print(f"Error in Gemini Vision AI: {str(e)}")
-        return jsonify({'error': f"AI Analysis Failed: {str(e)}"}), 500
 
-if __name__ == '__main__':
-    print("Starting Smart Yield ML Microservice on port 5000...")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+        # Parse JSON
+        result = json.loads(text_res)
+
+        result["success"] = True
+
+        return jsonify(result)
+
+    except Exception as e:
+
+        print(f"Disease Detection Error: {e}")
+
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+# ==============================
+# Main
+# ==============================
+if __name__ == "__main__":
+
+    PORT = int(os.environ.get("PORT", 5000))
+
+    print(f"Server Running on Port {PORT}")
+
+    app.run(
+        host="0.0.0.0",
+        port=PORT,
+        debug=False
+    )
